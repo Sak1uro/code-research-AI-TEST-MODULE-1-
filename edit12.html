@@ -1,0 +1,1159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Umbrella in the Rain</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: linear-gradient(to bottom, #1a1a2e, #16213e);
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Raindrops array
+        const raindrops = [];
+        const splashes = [];
+
+        // Person properties
+        const person = { 
+            x: canvas.width / 2,
+            y: canvas.height - 100,
+            baseY: canvas.height - 100,
+            width: 40,
+            height: 120,
+            baseSpeed: 2, // base walking speed
+            direction: 1, // 1 = right, -1 = left
+            walkCycle: 0,
+            armAngle: 0,
+            state: 'walking', // 'walking', 'pushed', 'flying', 'sunny_walk', 'running_back'
+            umbrellaAngle: 0, // umbrella tilt angle
+            pushProgress: 0, // progress of being pushed back
+            attemptCount: 0, // count of times reaching left edge
+            // Flying projectile properties
+            flyStartX: 0,
+            flyStartY: 0,
+            flyVelocityX: 0,
+            flyVelocityY: 0,
+            flyTime: 0,
+            flyGravity: 0.003, // gravity for projectile motion
+            // Sunny walk properties
+            sunnyWalkTimer: 0, // timer for 5 seconds in sunny mode
+            runProgress: 0 // progress of running back
+        };
+
+        // Weather state (0 = rainy, 1 = sunny)
+        let weatherTransition = 0;
+        let targetWeather = 0; // 0 = rainy, 1 = sunny
+
+        // Extended left margin for 5th attempt
+        let extendedLeftMargin = 0;
+
+        // Wind streaks array
+        const windStreaks = [];
+
+        // Lightning state
+        let lastLightningTime = 0;
+        const lightningInterval = 2000; // 2 seconds
+        let lightningFlash = 0; // Flash intensity (0-1)
+        let lightningBolts = []; // Active lightning bolts
+
+        // Lightning strike state (for 6th attempt)
+        let lightningStrikeActive = false;
+        let lightningStrikeTimer = 0;
+        const lightningStrikeDuration = 120; // 2 seconds at 60fps
+        let lightningStrikeX = 0;
+        let lightningStrikeY = 0;
+        
+        // Burnt state
+        let isBurnt = false;
+        
+        // Standing still after landing when burnt
+        let standingStillTimer = 0;
+        const standingStillDuration = 120; // 2 seconds at 60fps
+        
+        // Vortex state
+        let vortex = null;
+        
+        // Create wind streak - reduced by 20%
+        function createWindStreak() {
+            return {
+                x: -50,
+                y: Math.random() * canvas.height,
+                length: Math.random() * 120 + 64, // Reduced by 20%
+                speed: Math.random() * 6.4 + 4.8, // Reduced by 20%
+                opacity: Math.random() * 0.4 + 0.16, // Reduced by 20%
+                thickness: Math.random() * 2.4 + 1.2 // Reduced by 20%
+            };
+        }
+
+        // Initialize wind streaks - reduced by 20%
+        for (let i = 0; i < 40; i++) {
+            const streak = createWindStreak();
+            streak.x = Math.random() * canvas.width;
+            windStreaks.push(streak);
+        }
+
+        // Umbrella properties (now relative to person)
+        const umbrella = {
+            get x() { return person.x + 30; },
+            get y() { return person.y - person.height + 30; },
+            radius: 100,
+            handleHeight: 80,
+            color: '#e63946'
+        };
+
+        // Create raindrops
+        function createRaindrop() {
+            return {
+                x: Math.random() * canvas.width,
+                y: -10,
+                length: Math.random() * 20 + 10,
+                speed: Math.random() * 8 + 12,
+                opacity: Math.random() * 0.5 + 0.3
+            };
+        }
+
+        // Initialize raindrops
+        for (let i = 0; i < 200; i++) {
+            const drop = createRaindrop();
+            drop.y = Math.random() * canvas.height;
+            raindrops.push(drop);
+        }
+
+        // Create splash effect
+        function createSplash(x, y) {
+            splashes.push({
+                x: x,
+                y: y,
+                radius: 2,
+                maxRadius: Math.random() * 8 + 4,
+                opacity: 1
+            });
+        }
+
+        // Check if raindrop hits umbrella
+        function hitsUmbrella(drop) {
+            const umbrellaTop = umbrella.y - umbrella.radius * 0.3;
+            const dx = drop.x - umbrella.x;
+            const dy = drop.y - umbrellaTop;
+            
+            // Check if within umbrella dome area
+            if (dy > 0 && dy < umbrella.radius * 0.5) {
+                const widthAtY = umbrella.radius * Math.sqrt(1 - Math.pow((dy - umbrella.radius * 0.25) / (umbrella.radius * 0.5), 2));
+                if (Math.abs(dx) < widthAtY) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Draw umbrella
+        function drawUmbrella() {
+            const centerX = umbrella.x;
+            const centerY = umbrella.y;
+            
+            ctx.save();
+            
+            // Apply umbrella tilt
+            if (person.umbrellaAngle !== 0) {
+                ctx.translate(centerX, centerY + umbrella.handleHeight);
+                ctx.rotate(person.umbrellaAngle);
+                ctx.translate(-centerX, -(centerY + umbrella.handleHeight));
+            }
+            
+            // Determine colors based on burnt state
+            let canopyColor1, canopyColor2, segmentColor, handleColor;
+            if (isBurnt) {
+                canopyColor1 = '#2a2a2a';
+                canopyColor2 = '#1a1a1a';
+                segmentColor = '#0a0a0a';
+                handleColor = '#1a1a1a';
+            } else {
+                canopyColor1 = '#ff6b6b';
+                canopyColor2 = umbrella.color;
+                segmentColor = '#c1121f';
+                handleColor = '#5c4033';
+            }
+            
+            // Draw umbrella canopy (dome)
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, umbrella.radius, Math.PI, 0, false);
+            
+            // Gradient for umbrella
+            const gradient = ctx.createRadialGradient(
+                centerX, centerY - umbrella.radius/2, 0,
+                centerX, centerY, umbrella.radius
+            );
+            gradient.addColorStop(0, canopyColor1);
+            gradient.addColorStop(1, canopyColor2);
+            
+            ctx.fillStyle = gradient;
+            ctx.fill();
+            
+            // Umbrella segments
+            ctx.strokeStyle = segmentColor;
+            ctx.lineWidth = 2;
+            for (let i = 1; i < 8; i++) {
+                const angle = Math.PI + (i * Math.PI / 8);
+                ctx.beginPath();
+                ctx.moveTo(centerX, centerY);
+                ctx.lineTo(
+                    centerX + Math.cos(angle) * umbrella.radius,
+                    centerY + Math.sin(angle) * umbrella.radius
+                );
+                ctx.stroke();
+            }
+            
+            // Scalloped edge
+            ctx.beginPath();
+            for (let i = 0; i <= 8; i++) {
+                const angle = Math.PI + (i * Math.PI / 8);
+                const x = centerX + Math.cos(angle) * umbrella.radius;
+                const y = centerY + Math.sin(angle) * umbrella.radius;
+                
+                if (i === 0) {
+                    ctx.moveTo(x, y + 10);
+                } else {
+                    const prevAngle = Math.PI + ((i - 1) * Math.PI / 8);
+                    const prevX = centerX + Math.cos(prevAngle) * umbrella.radius;
+                    const midX = (x + prevX) / 2;
+                    ctx.quadraticCurveTo(midX, centerY + 15, x, y + 10);
+                }
+            }
+            ctx.fillStyle = canopyColor2;
+            ctx.fill();
+            
+            // Handle (pole)
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.lineTo(centerX, centerY + umbrella.handleHeight);
+            ctx.strokeStyle = handleColor;
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            
+            // Handle curve (J-shape)
+            ctx.beginPath();
+            ctx.arc(
+                centerX - 15, 
+                centerY + umbrella.handleHeight, 
+                15, 
+                0, 
+                Math.PI, 
+                false
+            );
+            ctx.stroke();
+            
+            // Top tip
+            ctx.beginPath();
+            ctx.arc(centerX, centerY - umbrella.radius, 5, 0, Math.PI * 2);
+            ctx.fillStyle = handleColor;
+            ctx.fill();
+            
+            ctx.restore();
+        }
+
+        // Draw person holding umbrella
+        function drawPerson() {
+            const x = person.x;
+            const y = person.y;
+            // Keep legs moving for walking, sunny_walk, and running_back states
+            const isMoving = person.state === 'walking' || person.state === 'sunny_walk' || person.state === 'running_back';
+            const walkPhase = isMoving ? Math.sin(person.walkCycle) * 0.4 : 0;
+            
+            ctx.save();
+            
+            // Flip based on direction for walking and sunny_walk states
+            // For running_back: face right (no flip needed as default is facing right)
+            if (person.direction === -1 && (person.state === 'walking' || person.state === 'sunny_walk')) {
+                ctx.translate(x, 0);
+                ctx.scale(-1, 1);
+                ctx.translate(-x, 0);
+            }
+            
+            // Body colors - burnt or normal
+            let skinColor, shirtColor, pantsColor, shoeColor, hairColor;
+            if (isBurnt) {
+                skinColor = '#2a2a2a';
+                shirtColor = '#1a1a1a';
+                pantsColor = '#0f0f0f';
+                shoeColor = '#0a0a0a';
+                hairColor = '#0a0a0a';
+            } else {
+                skinColor = '#e0ac69';
+                shirtColor = '#2c5f2d';
+                pantsColor = '#1a3a1a';
+                shoeColor = '#333';
+                hairColor = '#3d2314';
+            }
+            
+            // Head
+            ctx.beginPath();
+            ctx.arc(x, y - person.height + 15, 15, 0, Math.PI * 2);
+            ctx.fillStyle = skinColor;
+            ctx.fill();
+            ctx.strokeStyle = isBurnt ? '#1a1a1a' : '#c9956c';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            
+            // Hair
+            ctx.beginPath();
+            ctx.arc(x, y - person.height + 10, 15, Math.PI, 0, true);
+            ctx.fillStyle = hairColor;
+            ctx.fill();
+            
+            // Body (torso)
+            ctx.beginPath();
+            ctx.moveTo(x - 12, y - person.height + 30);
+            ctx.lineTo(x + 12, y - person.height + 30);
+            ctx.lineTo(x + 15, y - person.height + 70);
+            ctx.lineTo(x - 15, y - person.height + 70);
+            ctx.closePath();
+            ctx.fillStyle = shirtColor;
+            ctx.fill();
+            
+            // Left arm (at side)
+            ctx.beginPath();
+            ctx.moveTo(x - 12, y - person.height + 35);
+            ctx.lineTo(x - 20, y - person.height + 50 + walkPhase * 10);
+            ctx.lineTo(x - 18, y - person.height + 65 + walkPhase * 8);
+            ctx.strokeStyle = shirtColor;
+            ctx.lineWidth = 8;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            
+            // Left hand
+            ctx.beginPath();
+            ctx.arc(x - 18, y - person.height + 67 + walkPhase * 8, 5, 0, Math.PI * 2);
+            ctx.fillStyle = skinColor;
+            ctx.fill();
+            
+            // Right arm (holding umbrella up)
+            ctx.beginPath();
+            ctx.moveTo(x + 12, y - person.height + 35);
+            ctx.lineTo(x + 25, y - person.height + 25);
+            ctx.lineTo(x + 30, y - person.height + 10);
+            ctx.strokeStyle = shirtColor;
+            ctx.lineWidth = 8;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            
+            // Right hand holding umbrella handle
+            ctx.beginPath();
+            ctx.arc(x + 30, y - person.height + 10, 5, 0, Math.PI * 2);
+            ctx.fillStyle = skinColor;
+            ctx.fill();
+            
+            // Legs
+            const legSpread = walkPhase * 20;
+            
+            // Left leg
+            ctx.beginPath();
+            ctx.moveTo(x - 8, y - person.height + 70);
+            ctx.lineTo(x - 8 - legSpread, y - 25);
+            ctx.lineTo(x - 10 - legSpread, y - 5);
+            ctx.strokeStyle = pantsColor;
+            ctx.lineWidth = 12;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            
+            // Left shoe
+            ctx.beginPath();
+            ctx.ellipse(x - 10 - legSpread, y - 3, 12, 5, 0, 0, Math.PI * 2);
+            ctx.fillStyle = shoeColor;
+            ctx.fill();
+            
+            // Right leg
+            ctx.beginPath();
+            ctx.moveTo(x + 8, y - person.height + 70);
+            ctx.lineTo(x + 8 + legSpread, y - 25);
+            ctx.lineTo(x + 10 + legSpread, y - 5);
+            ctx.strokeStyle = pantsColor;
+            ctx.lineWidth = 12;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            
+            // Right shoe
+            ctx.beginPath();
+            ctx.ellipse(x + 10 + legSpread, y - 3, 12, 5, 0, 0, Math.PI * 2);
+            ctx.fillStyle = shoeColor;
+            ctx.fill();
+            
+            ctx.restore();
+        }
+
+        // Update person position (walking animation)
+        function updatePerson() {
+            const baseMargin = umbrella.radius + 50;
+            const margin = baseMargin - extendedLeftMargin;
+            
+            // Gradually transition weather
+            if (weatherTransition < targetWeather) {
+                weatherTransition = Math.min(weatherTransition + 0.005, targetWeather);
+            } else if (weatherTransition > targetWeather) {
+                weatherTransition = Math.max(weatherTransition - 0.005, targetWeather);
+            }
+            
+            if (person.state === 'walking') {
+                // Update walk cycle for leg animation
+                person.walkCycle += 0.15;
+                
+                // Different speeds based on direction
+                // Left: 0.5x speed, Right: 1x speed
+                const speedMultiplier = person.direction === -1 ? 0.5 : 1;
+                person.x += person.baseSpeed * speedMultiplier * person.direction;
+                
+                // Tilt umbrella 45 degrees left while walking left
+                if (person.direction === -1) {
+                    person.umbrellaAngle = -Math.PI / 4; // -45 degrees (tilt left)
+                } else {
+                    person.umbrellaAngle = 0;
+                }
+                
+                // Check if reached left edge
+                if (person.x <= margin && person.direction === -1) {
+                    person.x = margin;
+                    person.attemptCount++;
+                    person.umbrellaAngle = 0;
+                    
+                    // Every 5th attempt: extend pathway and transition to sunny
+                    if (person.attemptCount % 5 === 0) {
+                        person.state = 'sunny_walk';
+                        person.sunnyWalkTimer = 0;
+                        targetWeather = 1; // Start transitioning to sunny
+                        extendedLeftMargin = 300; // Extend the pathway leftward
+                    }
+                    // Every 2nd attempt (but not 5th): fly back in projectile path
+                    else if (person.attemptCount % 2 === 0) {
+                        person.state = 'flying';
+                        person.flyStartX = margin;
+                        person.flyStartY = person.baseY;
+                        person.flyTime = 0;
+                        person.passedApex = false; // Track if passed highest point
+                        
+                        // Calculate projectile to stay visible in window
+                        const targetX = canvas.width - baseMargin;
+                        const distance = targetX - margin;
+                        
+                        // Use very low gravity for high visible arc
+                        const gravity = 0.008;
+                        
+                        // Calculate velocity to reach target with visible arc
+                        // For 45 degree angle: range = v^2 / g, so v = sqrt(range * g)
+                        const baseVelocity = Math.sqrt(distance * gravity);
+                        const speedFactor = 0.75; // 0.75x speed
+                        
+                        // Scale velocities for slower motion but same trajectory shape
+                        person.flyVelocityX = baseVelocity * Math.cos(Math.PI / 4) * speedFactor;
+                        person.flyVelocityY = -baseVelocity * Math.sin(Math.PI / 4) * speedFactor;
+                        person.flyGravity = gravity * speedFactor * speedFactor;
+                        
+                        // Tilt umbrella 45 degrees right while flying
+                        person.umbrellaAngle = Math.PI / 4;
+                    } else {
+                        // Odd attempts: pushed back by wind at 1.5x speed
+                        person.state = 'pushed';
+                        person.pushProgress = 0;
+                        person.umbrellaAngle = Math.PI / 4; // Tilt umbrella 45 degrees right while pushed
+                    }
+                }
+                // Check if reached right edge - turn around
+                else if (person.x >= canvas.width - baseMargin) {
+                    person.x = canvas.width - baseMargin;
+                    person.direction = -1;
+                }
+            }
+            else if (person.state === 'sunny_walk') {
+                // Walking in sunny weather with extended pathway - continuous walking motion
+                person.walkCycle += 0.15; // Keep legs moving continuously
+                person.sunnyWalkTimer += 1;
+                
+                // Keep walking left with continuous leg motion
+                person.x += person.baseSpeed * 0.5 * -1;
+                person.umbrellaAngle = 0; // No tilt in sunny weather
+                person.direction = -1; // Ensure facing left while walking
+                
+                // Extended left edge
+                const extendedMargin = baseMargin - extendedLeftMargin;
+                
+                // Check if reached extended left edge or 5 seconds passed (300 frames at 60fps)
+                if (person.x <= extendedMargin || person.sunnyWalkTimer >= 300) {
+                    person.x = Math.max(person.x, extendedMargin);
+                    person.state = 'running_back';
+                    person.runProgress = 0;
+                    person.direction = 1; // Face right while running back
+                    targetWeather = 0; // Start transitioning back to rainy
+                }
+            }
+            else if (person.state === 'running_back') {
+                // Running back to right at 1.5x speed - facing right with umbrella tilted left
+                person.walkCycle += 0.3; // Faster leg animation for running
+                person.runProgress += 0.01;
+                
+                // Run at 1.5x speed towards right
+                person.x += person.baseSpeed * 1.5;
+                person.direction = 1; // Face right while running
+                person.umbrellaAngle = -Math.PI / 4; // Tilt umbrella 45 degrees left
+                
+                // Check if reached right edge
+                if (person.x >= canvas.width - baseMargin) {
+                    person.x = canvas.width - baseMargin;
+                    person.state = 'walking';
+                    person.direction = -1;
+                    person.walkCycle = 0;
+                    extendedLeftMargin = 0; // Reset extended margin
+                    targetWeather = 0; // Ensure rainy weather
+                }
+            }
+            else if (person.state === 'pushed') {
+                // Being pushed back by strong wind at 1.5x speed
+                person.pushProgress += 0.015; // 1.5x speed push
+                
+                // Keep umbrella tilted 45 degrees right while being pushed
+                person.umbrellaAngle = Math.PI / 4;
+                
+                // Ease the push motion for wind effect
+                const easeProgress = 1 - Math.pow(1 - person.pushProgress, 3);
+                
+                // Move towards right end
+                const targetX = canvas.width - baseMargin;
+                const startX = margin;
+                person.x = startX + (targetX - startX) * easeProgress;
+                
+                // Stay at ground level
+                person.y = person.baseY;
+                
+                // When push is complete
+                if (person.pushProgress >= 1) {
+                    person.x = targetX;
+                    person.y = person.baseY;
+                    person.state = 'walking';
+                    person.direction = -1; // Start walking left again
+                    person.walkCycle = 0;
+                    person.umbrellaAngle = -Math.PI / 4; // Reset to left tilt for walking left
+                }
+            }
+            else if (person.state === 'flying') {
+                // Handle lightning strike freeze
+                if (lightningStrikeActive) {
+                    lightningStrikeTimer++;
+                    if (lightningStrikeTimer >= lightningStrikeDuration) {
+                        lightningStrikeActive = false;
+                        lightningStrikeTimer = 0;
+                        isBurnt = true; // Person becomes burnt after lightning
+                    }
+                    return; // Freeze position during lightning strike
+                }
+                
+                // Projectile motion at 45 degree angle - use stored gravity
+                const gravity = person.flyGravity || 0.0005;
+                person.flyTime += 1;
+                
+                // Update position using projectile equations
+                person.x = person.flyStartX + person.flyVelocityX * person.flyTime;
+                person.y = person.flyStartY + person.flyVelocityY * person.flyTime + 0.5 * gravity * person.flyTime * person.flyTime;
+                
+                // Calculate current vertical velocity to determine if before or after apex
+                const currentVelocityY = person.flyVelocityY + gravity * person.flyTime;
+                
+                // Check for 6th attempt lightning strike at apex
+                if (person.attemptCount % 6 === 0 && !person.passedApex && currentVelocityY >= 0) {
+                    // Just reached apex - trigger lightning strike
+                    person.passedApex = true;
+                    lightningStrikeActive = true;
+                    lightningStrikeTimer = 0;
+                    lightningStrikeX = person.x;
+                    lightningStrikeY = person.y - person.height;
+                    return;
+                }
+                
+                // Before apex (going up): umbrella tilted 45 degrees right
+                // At/after apex (going down): umbrella straight
+                if (currentVelocityY < 0) {
+                    // Going up - before apex
+                    person.umbrellaAngle = Math.PI / 4; // 45 degrees right
+                } else {
+                    // Going down or at apex - straight umbrella
+                    person.umbrellaAngle = 0;
+                    person.passedApex = true;
+                }
+                
+                // Check if landed (back at ground level and past starting point)
+                if (person.y >= person.baseY && person.flyTime > 10) {
+                    person.y = person.baseY;
+                    
+                    // Land at the right end
+                    const targetX = canvas.width - baseMargin;
+                    person.x = targetX;
+                    
+                    // If burnt, enter standing still state
+                    if (isBurnt) {
+                        person.state = 'standing_still';
+                        standingStillTimer = 0;
+                        // Start vortex from left
+                        vortex = {
+                            x: -100,
+                            y: canvas.height - 150,
+                            radius: 80,
+                            rotation: 0,
+                            speed: person.baseSpeed * 3
+                        };
+                    } else {
+                        person.state = 'walking';
+                        person.direction = -1; // Start walking left again
+                        person.walkCycle = 0;
+                        person.umbrellaAngle = -Math.PI / 4; // Reset to left tilt for walking left
+                    }
+                }
+            }
+            else if (person.state === 'standing_still') {
+                standingStillTimer++;
+                
+                // Update vortex position
+                if (vortex) {
+                    vortex.x += vortex.speed;
+                    vortex.rotation += 0.3;
+                    
+                    // Check if vortex has crossed the person
+                    if (vortex.x > person.x + 50) {
+                        // Vortex passed - restore normal appearance
+                        isBurnt = false;
+                        vortex = null;
+                        
+                        // Resume walking
+                        person.state = 'walking';
+                        person.direction = -1;
+                        person.walkCycle = 0;
+                        person.umbrellaAngle = -Math.PI / 4;
+                    }
+                }
+                
+                // Fallback: if 2 seconds pass and no vortex transition, resume anyway
+                if (standingStillTimer >= standingStillDuration && !vortex) {
+                    person.state = 'walking';
+                    person.direction = -1;
+                    person.walkCycle = 0;
+                    person.umbrellaAngle = -Math.PI / 4;
+                }
+            }
+        }
+
+        // Draw wind streaks - reduced visuals by 20%
+        function drawWindStreaks() {
+            // Fade out wind during sunny weather
+            if (weatherTransition > 0.5) return;
+            
+            // Boost wind during push or flying phase - reduced by 20%
+            const speedMultiplier = (person.state === 'pushed' || person.state === 'flying') ? 3.2 : 1.2;
+            const weatherOpacity = 1 - weatherTransition;
+            
+            windStreaks.forEach((streak, index) => {
+                ctx.beginPath();
+                ctx.globalAlpha = streak.opacity * weatherOpacity * 0.8; // Reduced by 20%
+                ctx.strokeStyle = 'rgba(200, 220, 255, 0.64)'; // Reduced by 20%
+                ctx.lineWidth = streak.thickness;
+                ctx.lineCap = 'round';
+                
+                // Draw curved wind streak with reduced curve
+                ctx.moveTo(streak.x, streak.y);
+                ctx.quadraticCurveTo(
+                    streak.x + streak.length / 2, 
+                    streak.y + Math.sin(streak.x * 0.01) * 12,
+                    streak.x + streak.length, 
+                    streak.y + Math.sin(streak.x * 0.02) * 6.4
+                );
+                ctx.stroke();
+                
+                // Update position - move left to right (faster during push)
+                streak.x += streak.speed * speedMultiplier;
+                
+                // Add slight vertical wave motion
+                streak.y += Math.sin(streak.x * 0.05) * 0.4;
+                
+                // Reset if off screen
+                if (streak.x > canvas.width + 100) {
+                    windStreaks[index] = createWindStreak();
+                }
+                
+                // Reset if too far off vertically
+                if (streak.y < -50 || streak.y > canvas.height + 50) {
+                    windStreaks[index] = createWindStreak();
+                }
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        // Update wind streaks
+        function updateWindStreaks() {
+            // Occasionally add new wind streaks
+            // Add more wind streaks when person is being pushed back or flying - reduced by 20%
+            const isWindy = person.state === 'pushed' || person.state === 'flying';
+            const addChance = isWindy ? 0.4 : 0.08;
+            const maxStreaks = isWindy ? 96 : 48;
+            
+            if (Math.random() < addChance && windStreaks.length < maxStreaks) {
+                const streak = createWindStreak();
+                // Make wind streaks faster and longer during push/fly - reduced by 20%
+                if (isWindy) {
+                    streak.speed *= 2;
+                    streak.length *= 1.6;
+                    streak.opacity *= 1.44;
+                    streak.thickness *= 1.2;
+                }
+                windStreaks.push(streak);
+            }
+        }
+
+        // Create lightning bolt
+        function createLightningBolt() {
+            const startX = Math.random() * canvas.width * 0.8 + canvas.width * 0.1;
+            const segments = [];
+            let x = startX;
+            let y = 0;
+            const endY = canvas.height * (0.5 + Math.random() * 0.3);
+            
+            while (y < endY) {
+                const nextY = y + Math.random() * 40 + 20;
+                const nextX = x + (Math.random() - 0.5) * 80;
+                segments.push({ x1: x, y1: y, x2: nextX, y2: nextY });
+                
+                // Occasionally add branch
+                if (Math.random() < 0.3 && y > 50) {
+                    const branchEndX = nextX + (Math.random() - 0.5) * 60;
+                    const branchEndY = nextY + Math.random() * 30 + 20;
+                    segments.push({ 
+                        x1: nextX, y1: nextY, 
+                        x2: branchEndX, y2: branchEndY,
+                        isBranch: true 
+                    });
+                }
+                
+                x = nextX;
+                y = nextY;
+            }
+            
+            return {
+                segments: segments,
+                opacity: 1,
+                decay: 0.08
+            };
+        }
+
+        // Draw lightning
+        function drawLightning() {
+            // Only draw lightning in rainy weather
+            if (weatherTransition > 0.5) return;
+            
+            const currentTime = Date.now();
+            
+            // Create new lightning every 2 seconds
+            if (currentTime - lastLightningTime >= lightningInterval) {
+                lastLightningTime = currentTime;
+                lightningBolts.push(createLightningBolt());
+                lightningFlash = 0.4; // Screen flash
+            }
+            
+            // Draw screen flash
+            if (lightningFlash > 0) {
+                ctx.fillStyle = `rgba(255, 255, 255, ${lightningFlash})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                lightningFlash -= 0.02;
+            }
+            
+            // Draw and update lightning bolts
+            lightningBolts.forEach((bolt, index) => {
+                if (bolt.opacity <= 0) return;
+                
+                bolt.segments.forEach(seg => {
+                    ctx.beginPath();
+                    ctx.moveTo(seg.x1, seg.y1);
+                    ctx.lineTo(seg.x2, seg.y2);
+                    
+                    // Main bolt or branch
+                    const lineWidth = seg.isBranch ? 2 : 4;
+                    const glowWidth = seg.isBranch ? 6 : 12;
+                    
+                    // Glow effect
+                    ctx.strokeStyle = `rgba(200, 200, 255, ${bolt.opacity * 0.3})`;
+                    ctx.lineWidth = glowWidth;
+                    ctx.stroke();
+                    
+                    // Main bolt
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${bolt.opacity})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.stroke();
+                    
+                    // Core brightness
+                    ctx.strokeStyle = `rgba(220, 220, 255, ${bolt.opacity})`;
+                    ctx.lineWidth = lineWidth / 2;
+                    ctx.stroke();
+                });
+                
+                bolt.opacity -= bolt.decay;
+            });
+            
+            // Remove faded bolts
+            lightningBolts = lightningBolts.filter(bolt => bolt.opacity > 0);
+        }
+
+        // Draw lightning strike on person (for 6th attempt)
+        function drawLightningStrike() {
+            if (!lightningStrikeActive) return;
+            
+            // Intense screen flash
+            const flashIntensity = 0.3 + Math.random() * 0.2;
+            ctx.fillStyle = `rgba(255, 255, 255, ${flashIntensity})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw continuous lightning bolt from top to person
+            const segments = [];
+            let x = lightningStrikeX + Math.random() * 40 - 20;
+            let y = 0;
+            const targetY = lightningStrikeY;
+            
+            while (y < targetY) {
+                const nextY = Math.min(y + Math.random() * 30 + 15, targetY);
+                const nextX = x + (Math.random() - 0.5) * 50;
+                segments.push({ x1: x, y1: y, x2: nextX, y2: nextY });
+                x = nextX;
+                y = nextY;
+            }
+            
+            // Draw the lightning bolt
+            segments.forEach(seg => {
+                // Outer glow
+                ctx.beginPath();
+                ctx.moveTo(seg.x1, seg.y1);
+                ctx.lineTo(seg.x2, seg.y2);
+                ctx.strokeStyle = 'rgba(150, 150, 255, 0.5)';
+                ctx.lineWidth = 20;
+                ctx.stroke();
+                
+                // Middle glow
+                ctx.strokeStyle = 'rgba(200, 200, 255, 0.7)';
+                ctx.lineWidth = 10;
+                ctx.stroke();
+                
+                // Core
+                ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
+                ctx.lineWidth = 4;
+                ctx.stroke();
+            });
+            
+            // Draw electric sparks around the person
+            for (let i = 0; i < 8; i++) {
+                const sparkX = person.x + (Math.random() - 0.5) * 80;
+                const sparkY = person.y - Math.random() * person.height;
+                const sparkLen = Math.random() * 20 + 10;
+                const sparkAngle = Math.random() * Math.PI * 2;
+                
+                ctx.beginPath();
+                ctx.moveTo(sparkX, sparkY);
+                ctx.lineTo(
+                    sparkX + Math.cos(sparkAngle) * sparkLen,
+                    sparkY + Math.sin(sparkAngle) * sparkLen
+                );
+                ctx.strokeStyle = `rgba(255, 255, 100, ${0.5 + Math.random() * 0.5})`;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+
+        // Draw wind vortex
+        function drawVortex() {
+            if (!vortex) return;
+            
+            ctx.save();
+            ctx.translate(vortex.x, vortex.y);
+            ctx.rotate(vortex.rotation);
+            
+            // Draw spiraling wind vortex
+            const numSpirals = 5;
+            for (let s = 0; s < numSpirals; s++) {
+                ctx.beginPath();
+                const spiralOffset = (s / numSpirals) * Math.PI * 2;
+                
+                for (let i = 0; i < 50; i++) {
+                    const angle = spiralOffset + i * 0.3;
+                    const r = (i / 50) * vortex.radius;
+                    const x = Math.cos(angle) * r;
+                    const y = Math.sin(angle) * r * 1.5; // Elongate vertically
+                    
+                    if (i === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                }
+                
+                ctx.strokeStyle = `rgba(180, 200, 220, ${0.3 + (s / numSpirals) * 0.3})`;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+            
+            // Add some debris/dust particles
+            for (let i = 0; i < 12; i++) {
+                const particleAngle = Math.random() * Math.PI * 2;
+                const particleR = Math.random() * vortex.radius;
+                const px = Math.cos(particleAngle) * particleR;
+                const py = Math.sin(particleAngle) * particleR * 1.5;
+                
+                ctx.beginPath();
+                ctx.arc(px, py, 2 + Math.random() * 3, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(150, 170, 190, ${0.3 + Math.random() * 0.4})`;
+                ctx.fill();
+            }
+            
+            ctx.restore();
+        }
+
+        // Draw raindrops
+        function drawRain() {
+            // Fade out rain during sunny weather
+            const weatherOpacity = 1 - weatherTransition;
+            if (weatherOpacity < 0.1) return;
+            
+            ctx.strokeStyle = '#7ec8e3';
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+            
+            raindrops.forEach((drop, index) => {
+                ctx.beginPath();
+                ctx.globalAlpha = drop.opacity * weatherOpacity;
+                ctx.moveTo(drop.x, drop.y);
+                // Rain slants to the right due to wind
+                ctx.lineTo(drop.x + 3, drop.y + drop.length);
+                ctx.stroke();
+                
+                // Update position
+                drop.y += drop.speed;
+                drop.x += 1.5; // Wind pushes rain to the right
+                
+                // Check collision with umbrella
+                if (hitsUmbrella(drop)) {
+                    createSplash(drop.x, umbrella.y - umbrella.radius * 0.2);
+                    raindrops[index] = createRaindrop();
+                }
+                // Reset if off screen
+                else if (drop.y > canvas.height || drop.x > canvas.width + 50) {
+                    createSplash(drop.x, canvas.height - 5);
+                    raindrops[index] = createRaindrop();
+                }
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        // Draw splash effects
+        function drawSplashes() {
+            splashes.forEach((splash, index) => {
+                ctx.beginPath();
+                ctx.arc(splash.x, splash.y, splash.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(126, 200, 227, ${splash.opacity})`;
+                ctx.lineWidth = 1;
+                ctx.stroke();
+                
+                // Update splash
+                splash.radius += 0.5;
+                splash.opacity -= 0.05;
+                
+                // Remove finished splashes
+                if (splash.opacity <= 0) {
+                    splashes.splice(index, 1);
+                }
+            });
+        }
+
+        // Draw ground puddles
+        function drawPuddles() {
+            // Fade puddles during sunny weather
+            const puddleOpacity = 0.2 * (1 - weatherTransition * 0.7);
+            
+            ctx.fillStyle = `rgba(126, 200, 227, ${puddleOpacity})`;
+            ctx.beginPath();
+            ctx.ellipse(canvas.width / 2, canvas.height - 20, 200, 15, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.beginPath();
+            ctx.ellipse(canvas.width / 4, canvas.height - 10, 100, 10, 0, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.beginPath();
+            ctx.ellipse(canvas.width * 3 / 4, canvas.height - 15, 150, 12, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Draw muddy floor for sunny environment
+        function drawMuddyFloor() {
+            if (weatherTransition < 0.3) return;
+            
+            ctx.globalAlpha = weatherTransition;
+            
+            // Draw muddy ground base
+            const groundY = canvas.height - 50;
+            const groundGradient = ctx.createLinearGradient(0, groundY, 0, canvas.height);
+            groundGradient.addColorStop(0, '#8B4513'); // Saddle brown
+            groundGradient.addColorStop(0.3, '#6B3E0A'); // Darker brown
+            groundGradient.addColorStop(1, '#4A2C0A'); // Even darker
+            
+            ctx.fillStyle = groundGradient;
+            ctx.fillRect(-100, groundY, canvas.width + 200, canvas.height - groundY);
+            
+            // Add mud texture with random spots
+            ctx.fillStyle = '#5C3317';
+            for (let i = 0; i < 30; i++) {
+                const spotX = (i * 73) % (canvas.width + 100) - 50;
+                const spotY = groundY + 10 + Math.sin(i * 1.5) * 15;
+                const spotW = 30 + Math.sin(i * 2.3) * 15;
+                const spotH = 8 + Math.sin(i * 1.7) * 4;
+                ctx.beginPath();
+                ctx.ellipse(spotX, spotY, spotW, spotH, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // Add darker mud patches
+            ctx.fillStyle = '#3D2010';
+            for (let i = 0; i < 20; i++) {
+                const patchX = (i * 97 + 30) % (canvas.width + 100) - 50;
+                const patchY = groundY + 20 + Math.cos(i * 1.2) * 10;
+                const patchW = 20 + Math.cos(i * 1.8) * 10;
+                const patchH = 6 + Math.cos(i * 2.1) * 3;
+                ctx.beginPath();
+                ctx.ellipse(patchX, patchY, patchW, patchH, 0.2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // Add wet/shiny spots
+            ctx.fillStyle = 'rgba(139, 90, 43, 0.4)';
+            for (let i = 0; i < 15; i++) {
+                const wetX = (i * 113 + 50) % (canvas.width + 100) - 50;
+                const wetY = groundY + 5 + Math.sin(i * 0.9) * 8;
+                const wetR = 15 + Math.sin(i * 1.4) * 8;
+                ctx.beginPath();
+                ctx.ellipse(wetX, wetY, wetR, wetR * 0.4, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            ctx.globalAlpha = 1;
+        }
+
+        // Draw sun for sunny weather
+        function drawSun() {
+            if (weatherTransition < 0.1) return;
+            
+            ctx.globalAlpha = weatherTransition;
+            
+            // Sun position
+            const sunX = canvas.width - 150;
+            const sunY = 120;
+            const sunRadius = 60;
+            
+            // Sun glow
+            const glowGradient = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunRadius * 2);
+            glowGradient.addColorStop(0, 'rgba(255, 220, 100, 0.8)');
+            glowGradient.addColorStop(0.5, 'rgba(255, 200, 50, 0.3)');
+            glowGradient.addColorStop(1, 'rgba(255, 200, 50, 0)');
+            ctx.fillStyle = glowGradient;
+            ctx.beginPath();
+            ctx.arc(sunX, sunY, sunRadius * 2, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Sun body
+            ctx.beginPath();
+            ctx.arc(sunX, sunY, sunRadius, 0, Math.PI * 2);
+            const sunGradient = ctx.createRadialGradient(sunX - 20, sunY - 20, 0, sunX, sunY, sunRadius);
+            sunGradient.addColorStop(0, '#fff5cc');
+            sunGradient.addColorStop(1, '#ffcc00');
+            ctx.fillStyle = sunGradient;
+            ctx.fill();
+            
+            // Sun rays
+            ctx.strokeStyle = 'rgba(255, 200, 50, 0.6)';
+            ctx.lineWidth = 4;
+            for (let i = 0; i < 12; i++) {
+                const angle = (i * Math.PI * 2) / 12 + Date.now() * 0.0005;
+                const innerR = sunRadius + 10;
+                const outerR = sunRadius + 30;
+                ctx.beginPath();
+                ctx.moveTo(sunX + Math.cos(angle) * innerR, sunY + Math.sin(angle) * innerR);
+                ctx.lineTo(sunX + Math.cos(angle) * outerR, sunY + Math.sin(angle) * outerR);
+                ctx.stroke();
+            }
+            
+            ctx.globalAlpha = 1;
+        }
+
+        // Animation loop
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw background gradient - transitions between rainy and sunny
+            const bgGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            
+            // Rainy colors
+            const rainyTop = { r: 26, g: 26, b: 46 };
+            const rainyBottom = { r: 22, g: 33, b: 62 };
+            
+            // Sunny colors
+            const sunnyTop = { r: 135, g: 206, b: 235 };
+            const sunnyBottom = { r: 176, g: 224, b: 230 };
+            
+            // Interpolate colors based on weather transition
+            const topR = Math.round(rainyTop.r + (sunnyTop.r - rainyTop.r) * weatherTransition);
+            const topG = Math.round(rainyTop.g + (sunnyTop.g - rainyTop.g) * weatherTransition);
+            const topB = Math.round(rainyTop.b + (sunnyTop.b - rainyTop.b) * weatherTransition);
+            
+            const bottomR = Math.round(rainyBottom.r + (sunnyBottom.r - rainyBottom.r) * weatherTransition);
+            const bottomG = Math.round(rainyBottom.g + (sunnyBottom.g - rainyBottom.g) * weatherTransition);
+            const bottomB = Math.round(rainyBottom.b + (sunnyBottom.b - rainyBottom.b) * weatherTransition);
+            
+            bgGradient.addColorStop(0, `rgb(${topR}, ${topG}, ${topB})`);
+            bgGradient.addColorStop(1, `rgb(${bottomR}, ${bottomG}, ${bottomB})`);
+            ctx.fillStyle = bgGradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            drawSun();
+            drawLightning();
+            drawLightningStrike();
+            updatePerson();
+            updateWindStreaks();
+            drawWindStreaks();
+            drawVortex();
+            drawMuddyFloor();
+            drawPuddles();
+            drawRain();
+            drawSplashes();
+            drawPerson();
+            drawUmbrella();
+            
+            requestAnimationFrame(animate);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            person.baseY = canvas.height - 100;
+            if (person.state === 'walking') {
+                person.y = person.baseY;
+            }
+        });
+
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
